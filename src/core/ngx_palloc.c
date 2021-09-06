@@ -14,30 +14,32 @@ static ngx_inline void *ngx_palloc_small(ngx_pool_t *pool, size_t size,
 static void *ngx_palloc_block(ngx_pool_t *pool, size_t size);
 static void *ngx_palloc_large(ngx_pool_t *pool, size_t size);
 
-
+//创建内存池
 ngx_pool_t *
 ngx_create_pool(size_t size, ngx_log_t *log)
 {
     ngx_pool_t  *p;
 
-    p = ngx_memalign(NGX_POOL_ALIGNMENT, size, log);
+    p =  ngx_memalign(NGX_POOL_ALIGNMENT, size, log);   /*  nginx_alloc函数，实际为malloc的封装，返回申请的内存初始地址 */
     if (p == NULL) {
         return NULL;
     }
 
-    p->d.last = (u_char *) p + sizeof(ngx_pool_t);
-    p->d.end = (u_char *) p + size;
-    p->d.next = NULL;
-    p->d.failed = 0;
 
-    size = size - sizeof(ngx_pool_t);
-    p->max = (size < NGX_MAX_ALLOC_FROM_POOL) ? size : NGX_MAX_ALLOC_FROM_POOL;
+    
+    p->d.last = (u_char *) p + sizeof(ngx_pool_t);  /* 可用内存地址 == 当前地址起始 + 被占用地址  */
+    p->d.end = (u_char *) p + size;                 /* 当前地址的结束地址 == 当前地址起始 + 内存池大小 */
+    p->d.next = NULL;                               /* 下一个内存池地址 */
+    p->d.failed = 0;                                /*  初始化分配失败地址次数为0 */
 
-    p->current = p;
-    p->chain = NULL;
-    p->large = NULL;
-    p->cleanup = NULL;
-    p->log = log;
+    size = size - sizeof(ngx_pool_t);    /*  剩余可使用内存大小 */
+    p->max = (size < NGX_MAX_ALLOC_FROM_POOL) ? size : NGX_MAX_ALLOC_FROM_POOL;    /* 剩余内存块与可提供最大内存的比较，取小值  */
+                                                                                   /* 分配内存时，不仅和剩余内存有关系，也会设置的可申请最大内存块值  */
+    p->current = p;   /* 指向当前内存  */
+    p->chain = NULL;  /* 缓冲区链表初始化  */
+    p->large = NULL;  /* 大数据链表初始化  */
+    p->cleanup = NULL;/* 清理结构初始化 */ 
+    p->log = log;     /*  初始化日志 */
 
     return p;
 }
@@ -50,7 +52,7 @@ ngx_destroy_pool(ngx_pool_t *pool)
     ngx_pool_large_t    *l;
     ngx_pool_cleanup_t  *c;
 
-    for (c = pool->cleanup; c; c = c->next) {
+    for (c = pool->cleanup; c; c = c->next) {     /* 调用清理函数，清除数据  */
         if (c->handler) {
             ngx_log_debug1(NGX_LOG_DEBUG_ALLOC, pool->log, 0,
                            "run cleanup: %p", c);
@@ -80,12 +82,12 @@ ngx_destroy_pool(ngx_pool_t *pool)
 
 #endif
 
-    for (l = pool->large; l; l = l->next) {
+    for (l = pool->large; l; l = l->next) {   /* 释放大数据内存  */
         if (l->alloc) {
-            ngx_free(l->alloc);
+            ngx_free(l->alloc);     /* 就是个free */
         }
     }
-
+    /* 释放内存池数据区域  */
     for (p = pool, n = pool->d.next; /* void */; p = n, n = n->d.next) {
         ngx_free(p);
 
@@ -104,12 +106,12 @@ ngx_reset_pool(ngx_pool_t *pool)
 
     for (l = pool->large; l; l = l->next) {
         if (l->alloc) {
-            ngx_free(l->alloc);
+            ngx_free(l->alloc);   /* 删除大数据内存块 */
         }
     }
 
     for (p = pool; p; p = p->d.next) {
-        p->d.last = (u_char *) p + sizeof(ngx_pool_t);
+        p->d.last = (u_char *) p + sizeof(ngx_pool_t);  /* 重新设置内存池的data区域，data区域的数据并未立即清楚 */
         p->d.failed = 0;
     }
 
@@ -124,11 +126,11 @@ ngx_palloc(ngx_pool_t *pool, size_t size)
 {
 #if !(NGX_DEBUG_PALLOC)
     if (size <= pool->max) {
-        return ngx_palloc_small(pool, size, 1);
+        return ngx_palloc_small(pool, size, 1);   /* 分配小块内存 */
     }
 #endif
 
-    return ngx_palloc_large(pool, size);
+    return ngx_palloc_large(pool, size);          /* 分配大块内存 */
 }
 
 
@@ -137,7 +139,7 @@ ngx_pnalloc(ngx_pool_t *pool, size_t size)
 {
 #if !(NGX_DEBUG_PALLOC)
     if (size <= pool->max) {
-        return ngx_palloc_small(pool, size, 0);
+        return ngx_palloc_small(pool, size, 0);   /* 区别问题 ----   0和1    */
     }
 #endif
 
@@ -156,17 +158,17 @@ ngx_palloc_small(ngx_pool_t *pool, size_t size, ngx_uint_t align)
     do {
         m = p->d.last;
 
-        if (align) {
-            m = ngx_align_ptr(m, NGX_ALIGNMENT);
-        }
+        if (align) {/* 很有意思的内存对齐！！！！！！ */
+            m = ngx_align_ptr(m, NGX_ALIGNMENT);  /* 内存对齐操作，会损失内存，但是会提高内存使用速度，m值为内存对齐后的新地址 */
+        }              
 
-        if ((size_t) (p->d.end - m) >= size) {
-            p->d.last = m + size;
+        if ((size_t) (p->d.end - m) >= size) {   /* 判断整个剩余空间是否足够分配 */
+            p->d.last = m + size;                /* 已使用内存标记last向后移动size */
 
             return m;
         }
 
-        p = p->d.next;
+        p = p->d.next;       /* 指向下一块内存池 */
 
     } while (p);
 
@@ -175,36 +177,36 @@ ngx_palloc_small(ngx_pool_t *pool, size_t size, ngx_uint_t align)
 
 
 static void *
-ngx_palloc_block(ngx_pool_t *pool, size_t size)
+ngx_palloc_block(ngx_pool_t *pool, size_t size)   /* 内存池扩容 */
 {
     u_char      *m;
     size_t       psize;
     ngx_pool_t  *p, *new;
 
-    psize = (size_t) (pool->d.end - (u_char *) pool);
+    psize = (size_t) (pool->d.end - (u_char *) pool);    /* 一个标准内存池可用内存的大小 */
 
-    m = ngx_memalign(NGX_POOL_ALIGNMENT, psize, pool->log);
+    m = ngx_memalign(NGX_POOL_ALIGNMENT, psize, pool->log);    /* 申请新的内存块 实为malloc的封装 */
     if (m == NULL) {
         return NULL;
     }
 
-    new = (ngx_pool_t *) m;
+    new = (ngx_pool_t *) m;    /* 内存块转为内存池结构 */
 
-    new->d.end = m + psize;
+    new->d.end = m + psize;    /* 可用内存起始地址 */
     new->d.next = NULL;
-    new->d.failed = 0;
+    new->d.failed = 0;         /* 初始化分配失败的情况 */
 
-    m += sizeof(ngx_pool_data_t);
-    m = ngx_align_ptr(m, NGX_ALIGNMENT);
-    new->d.last = m + size;
+    m += sizeof(ngx_pool_data_t);   /* 内存数据区域的大小 */ 
+    m = ngx_align_ptr(m, NGX_ALIGNMENT);  /* 内存对齐  NGX_ALIGNMENT为对齐的大小  */
+    new->d.last = m + size;            /* 数据区域的起始地址 */
 
-    for (p = pool->current; p->d.next; p = p->d.next) {
+    for (p = pool->current; p->d.next; p = p->d.next) {   /* 内存分配每次从current开始，如果当前失败次数大于4，就更换current,下次从新current开始,循环链表找内存分配 */
         if (p->d.failed++ > 4) {
-            pool->current = p->d.next;
+            pool->current = p->d.next;  
         }
     }
 
-    p->d.next = new;
+    p->d.next = new;   //此时p为最后一个节点，
 
     return m;
 }
@@ -255,7 +257,7 @@ ngx_pmemalign(ngx_pool_t *pool, size_t size, size_t alignment)
     void              *p;
     ngx_pool_large_t  *large;
 
-    p = ngx_memalign(alignment, size, pool->log);
+    p = ngx_memalign(alignment, size, pool->log);    /*  nginx_alloc函数，实际为malloc的封装，返回开辟内存初始地址 */
     if (p == NULL) {
         return NULL;
     }
